@@ -385,10 +385,24 @@ export default function Home() {
 
 
       <main className="relative z-10 container mx-auto px-6 py-12 max-w-4xl flex flex-col items-center justify-center min-h-screen">
-        <div className="text-center mb-12">
-          <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight mb-4 bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 text-transparent bg-clip-text">
-            lazyNotes
-          </h1>
+        <div className="text-center mb-12 flex flex-col items-center">
+          <div className="relative group cursor-default mb-4">
+            {/* Glow effect behind the logo */}
+            <div className={`absolute -inset-2 blur-2xl opacity-20 group-hover:opacity-40 transition duration-1000 group-hover:duration-200 rounded-full ${
+              isDarkMode ? "bg-white" : "bg-black"
+            }`}></div>
+            
+            <h1 className="relative flex items-center text-5xl md:text-6xl font-extrabold tracking-tighter transition-transform duration-500 group-hover:scale-105">
+              {/* Logo Text */}
+              <span className={`bg-clip-text text-transparent bg-gradient-to-b ${
+                isDarkMode 
+                  ? "from-white via-neutral-200 to-neutral-500" 
+                  : "from-neutral-900 via-neutral-700 to-neutral-400"
+              }`}>
+                lazyNotes
+              </span>
+            </h1>
+          </div>
           <p
             className={`text-lg md:text-xl max-w-2xl mx-auto ${isDarkMode ? "text-neutral-400" : "text-neutral-600"
               }`}
