@@ -32,6 +32,7 @@ export default function Home() {
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [processingMsg, setProcessingMsg] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'transcript' | 'summary' | 'notes'>('transcript');
 
   // Chunk state buckets
   const [transcriptChunks, setTranscriptChunks] = useState<string[]>([]);
@@ -41,9 +42,11 @@ export default function Home() {
   // Stable refs to read最新 state inside setInterval closures
   const summaryHistoryRef = useRef<string[]>([]);
   const notesHistoryRef = useRef<{ topic: string; details: string[] }[]>([]);
+  const transcriptHistoryRef = useRef<string[]>([]);
 
   useEffect(() => { summaryHistoryRef.current = summaryChunks; }, [summaryChunks]);
   useEffect(() => { notesHistoryRef.current = notesChunks; }, [notesChunks]);
+  useEffect(() => { transcriptHistoryRef.current = transcriptChunks; }, [transcriptChunks]);
 
   // Refs for logic
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -134,14 +137,19 @@ export default function Home() {
       if (event.data.size > 0) chunks.push(event.data);
     };
 
-    mediaRecorder.onstop = () => {
+    mediaRecorder.onstop = async () => {
       if (chunks.length > 0) {
         const blob = new Blob(chunks, { type: "audio/webm" });
-        processAudioChunk(blob);
+        await processAudioChunk(blob);
+      } else if (!streamRef.current) {
+        await generateSummary();
+        await generateNotes();
       }
 
       if (streamRef.current) {
         startChunkSequence(stream);
+      } else {
+        await downloadPDF();
       }
     };
 
@@ -251,14 +259,87 @@ export default function Home() {
     }
   };
 
-  // 30s Executive Summary and 60s Structured Notes loop
+  const downloadPDF = async () => {
+    const notes = notesHistoryRef.current;
+    const summary = summaryHistoryRef.current;
+    const transcript = transcriptHistoryRef.current;
+
+    if (notes.length === 0 && summary.length === 0 && transcript.length === 0) return;
+
+    try {
+      setProcessingMsg("Generating PDF...");
+      const html2pdf = (await import('html2pdf.js')).default;
+
+      const dateStr = new Date().toISOString().split('T')[0];
+      const topics = notes.map(n => n.topic);
+      const topicStr = topics.length > 0 ? topics.join(" and ") : "Lecture Notes";
+      const filename = `${dateStr} - ${topicStr}.pdf`;
+
+      const container = document.createElement("div");
+      container.style.padding = "20px";
+      container.style.fontFamily = "sans-serif";
+      container.style.color = "#000";
+
+      if (notes.length > 0) {
+        const notesHtml = `
+          <h1 style="font-size: 24px; color: #4F46E5; margin-bottom: 16px;">Short Notes</h1>
+          ${notes.map((note, index) => `
+            <div style="margin-bottom: 20px;">
+              <h2 style="font-size: 18px; margin-bottom: 8px; color: #1F2937;">${index + 1}. ${note.topic}</h2>
+              <ul style="margin: 0; padding-left: 20px; color: #374151;">
+                ${note.details.map(d => `<li style="margin-bottom: 4px;">${d}</li>`).join('')}
+              </ul>
+            </div>
+          `).join('')}
+          <div class="html2pdf__page-break"></div>
+        `;
+        container.innerHTML += notesHtml;
+      }
+
+      if (summary.length > 0) {
+        const summaryText = summary.join('\\n\\n');
+        const summaryHtml = `
+          <h1 style="font-size: 24px; color: #4F46E5; margin-bottom: 16px;">Detailed Summary</h1>
+          <div style="font-size: 16px; line-height: 1.6; color: #374151; white-space: pre-wrap; margin-bottom: 20px;">${summaryText}</div>
+          <div class="html2pdf__page-break"></div>
+        `;
+        container.innerHTML += summaryHtml;
+      }
+
+      if (transcript.length > 0) {
+        const transcriptText = transcript.join(' ');
+        const transcriptHtml = `
+          <h1 style="font-size: 24px; color: #4F46E5; margin-bottom: 16px;">Transcript</h1>
+          <div style="font-size: 14px; line-height: 1.5; color: #4B5563; font-family: monospace;">${transcriptText}</div>
+        `;
+        container.innerHTML += transcriptHtml;
+      }
+
+      const opt = {
+        margin: 10,
+        filename: filename,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      await html2pdf().from(container).set(opt).save();
+      setProcessingMsg(null);
+    } catch (err) {
+      console.error("PDF generation failed:", err);
+      setProcessingMsg("Failed to generate PDF.");
+      setTimeout(() => setProcessingMsg(null), 3000);
+    }
+  };
+
+  // 30s Detailed Summary and 60s Short Notes loop
   useEffect(() => {
     if (!isRecording) return;
-    
+
     let tick = 0;
     const interval = setInterval(async () => {
       tick += 30;
-      
+
       const tasks = [generateSummary()];
       if (tick % 60 === 0) {
         setProcessingMsg("Processing summary & notes...");
@@ -266,11 +347,11 @@ export default function Home() {
       } else {
         setProcessingMsg("Processing 30s summary...");
       }
-      
+
       await Promise.all(tasks);
       setProcessingMsg(null);
     }, 30000); // 30 seconds
-    
+
     return () => clearInterval(interval);
   }, [isRecording]);
 
@@ -284,8 +365,8 @@ export default function Home() {
         <button
           onClick={() => setIsDarkMode(!isDarkMode)}
           className={`p-3 rounded-full transition-all duration-300 shadow-lg border ${isDarkMode
-              ? "bg-neutral-800 border-neutral-700 text-yellow-400 hover:bg-neutral-700"
-              : "bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100 shadow-sm"
+            ? "bg-neutral-800 border-neutral-700 text-yellow-400 hover:bg-neutral-700"
+            : "bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100 shadow-sm"
             }`}
           title="Toggle Light/Dark Mode"
         >
@@ -319,8 +400,8 @@ export default function Home() {
         {/* Recorder Section */}
         <div
           className={`w-full backdrop-blur-xl rounded-3xl p-8 shadow-2xl transition-all mb-8 relative overflow-hidden border ${isDarkMode
-              ? "bg-neutral-800/50 border-neutral-700/50"
-              : "bg-white/70 border-neutral-200 shadow-neutral-200/50"
+            ? "bg-neutral-800/50 border-neutral-700/50"
+            : "bg-white/70 border-neutral-200 shadow-neutral-200/50"
             }`}
         >
           <div className="flex flex-col items-center justify-center gap-6">
@@ -344,8 +425,8 @@ export default function Home() {
             <button
               onClick={isRecording ? stopRecording : startRecording}
               className={`relative group flex items-center justify-center w-24 h-24 rounded-full transition-all duration-300 ${isRecording
-                  ? "bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 shadow-[0_0_30px_rgba(239,68,68,0.3)] hover:shadow-[0_0_40px_rgba(239,68,68,0.5)] scale-110"
-                  : "bg-indigo-500/20 hover:bg-indigo-500/40 border border-indigo-500/50 hover:shadow-[0_0_30px_rgba(99,102,241,0.4)]"
+                ? "bg-red-500/20 hover:bg-red-500/30 border border-red-500/50 shadow-[0_0_30px_rgba(239,68,68,0.3)] hover:shadow-[0_0_40px_rgba(239,68,68,0.5)] scale-110"
+                : "bg-indigo-500/20 hover:bg-indigo-500/40 border border-indigo-500/50 hover:shadow-[0_0_30px_rgba(99,102,241,0.4)]"
                 }`}
             >
               {isRecording ? (
@@ -384,9 +465,46 @@ export default function Home() {
         {/* Results Section */}
         {transcriptChunks.length > 0 && (
           <div className="w-full animate-in fade-in slide-in-from-bottom-8 duration-700 delay-100">
+            {/* Tabs */}
+            <div className="flex flex-wrap justify-center gap-4 mb-8">
+              <button
+                onClick={() => setActiveTab('transcript')}
+                className={`px-6 py-2 rounded-full font-medium transition-all duration-300 ${activeTab === 'transcript'
+                    ? 'bg-indigo-500 text-white shadow-lg scale-105'
+                    : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'
+                      : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+              >
+                Transcript
+              </button>
+              <button
+                onClick={() => setActiveTab('summary')}
+                className={`px-6 py-2 rounded-full font-medium transition-all duration-300 ${activeTab === 'summary'
+                    ? 'bg-indigo-500 text-white shadow-lg scale-105'
+                    : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'
+                      : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+              >
+                Detailed Summary
+              </button>
+              <button
+                onClick={() => setActiveTab('notes')}
+                className={`px-6 py-2 rounded-full font-medium transition-all duration-300 ${activeTab === 'notes'
+                    ? 'bg-indigo-500 text-white shadow-lg scale-105'
+                    : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700'
+                      : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+              >
+                Short Notes
+              </button>
+            </div>
+
             {/* Raw Transcript */}
             <div
-              className={`backdrop-blur-md rounded-2xl p-6 shadow-xl mb-6 border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
+              className={`${activeTab === 'transcript' ? 'block' : 'hidden'} backdrop-blur-md rounded-2xl p-6 shadow-xl mb-6 border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
                 }`}
             >
               <h2
@@ -396,12 +514,12 @@ export default function Home() {
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                 </svg>
-                Deepgram Live Transcript
+                Transcript
               </h2>
               <div
-                className={`leading-relaxed text-sm p-4 rounded-xl border max-h-60 overflow-y-auto font-mono ${isDarkMode
-                    ? "text-neutral-300 bg-neutral-900/50 border-neutral-700/30"
-                    : "text-neutral-700 bg-neutral-50 border-neutral-200"
+                className={`leading-relaxed text-sm p-4 rounded-xl border font-mono ${isDarkMode
+                  ? "text-neutral-300 bg-neutral-900/50 border-neutral-700/30"
+                  : "text-neutral-700 bg-neutral-50 border-neutral-200"
                   }`}
               >
                 {transcriptChunks.map((chunk, idx) => (
@@ -415,7 +533,7 @@ export default function Home() {
             {/* Summary */}
             {summaryChunks.length > 0 && (
               <div
-                className={`backdrop-blur-md rounded-2xl p-6 shadow-xl mb-6 border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
+                className={`${activeTab === 'summary' ? 'block' : 'hidden'} backdrop-blur-md rounded-2xl p-6 shadow-xl mb-6 border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
                   }`}
               >
                 <h2
@@ -425,7 +543,7 @@ export default function Home() {
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
-                  Executive Summary
+                  Detailed Summary
                 </h2>
                 <div
                   className={`leading-relaxed text-lg whitespace-pre-wrap ${isDarkMode ? "text-neutral-300" : "text-neutral-700"
@@ -443,7 +561,7 @@ export default function Home() {
             {/* Notes */}
             {notesChunks.length > 0 && (
               <div
-                className={`backdrop-blur-md rounded-2xl p-6 shadow-xl border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
+                className={`${activeTab === 'notes' ? 'block' : 'hidden'} backdrop-blur-md rounded-2xl p-6 shadow-xl border ${isDarkMode ? "bg-neutral-800/40 border-neutral-700/50" : "bg-white/80 border-neutral-200"
                   }`}
               >
                 <h2
@@ -453,15 +571,15 @@ export default function Home() {
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
                   </svg>
-                  Structured Notes
+                  Short Notes
                 </h2>
                 <div className="grid gap-6">
                   {notesChunks.map((note, index) => (
                     <div
                       key={index}
                       className={`rounded-xl p-5 border ${isDarkMode
-                          ? "bg-neutral-900/50 border-neutral-700/30"
-                          : "bg-neutral-50 border-neutral-200"
+                        ? "bg-neutral-900/50 border-neutral-700/30"
+                        : "bg-neutral-50 border-neutral-200"
                         }`}
                     >
                       <h3
@@ -470,8 +588,8 @@ export default function Home() {
                       >
                         <span
                           className={`flex items-center justify-center w-6 h-6 rounded-full text-xs text-center border ${isDarkMode
-                              ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30"
-                              : "bg-indigo-100 text-indigo-700 border-indigo-200"
+                            ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30"
+                            : "bg-indigo-100 text-indigo-700 border-indigo-200"
                             }`}
                         >
                           {index + 1}
@@ -483,8 +601,8 @@ export default function Home() {
                           <li
                             key={dIndex}
                             className={`pl-4 relative before:content-[''] before:absolute before:left-0 before:top-2 before:w-1.5 before:h-1.5 before:rounded-full ${isDarkMode
-                                ? "text-neutral-400 before:bg-neutral-600"
-                                : "text-neutral-600 before:bg-neutral-400"
+                              ? "text-neutral-400 before:bg-neutral-600"
+                              : "text-neutral-600 before:bg-neutral-400"
                               }`}
                           >
                             {detail}

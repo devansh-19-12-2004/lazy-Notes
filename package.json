@@ -13,6 +13,7 @@
     "@google/genai": "^1.46.0",
     "firebase": "^12.11.0",
     "groq-sdk": "^1.1.1",
+    "html2pdf.js": "^0.14.0",
     "next": "16.2.1",
     "react": "19.2.4",
     "react-dom": "19.2.4"
